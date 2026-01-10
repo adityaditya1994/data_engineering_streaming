@@ -21,7 +21,7 @@ Resources:
   BronzeBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub '${ProjectName}-${EnvironmentName}-bronze-${AWS::AccountId}'
+      BucketName: !Sub 'ahs-${ProjectName}-${EnvironmentName}-bronze-${AWS::AccountId}'
       VersioningConfiguration:
         Status: Enabled
       BucketEncryption:
@@ -55,7 +55,7 @@ Resources:
   ScriptsBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub '${ProjectName}-${EnvironmentName}-scripts-${AWS::AccountId}'
+      BucketName: !Sub 'ahs-${ProjectName}-${EnvironmentName}-scripts-${AWS::AccountId}'
       VersioningConfiguration:
         Status: Enabled
       BucketEncryption:
@@ -79,7 +79,7 @@ Resources:
   LogsBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub '${ProjectName}-${EnvironmentName}-logs-${AWS::AccountId}'
+      BucketName: !Sub 'ahs-${ProjectName}-${EnvironmentName}-logs-${AWS::AccountId}'
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -106,7 +106,7 @@ Resources:
   IcebergBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub '${ProjectName}-${EnvironmentName}-iceberg-${AWS::AccountId}'
+      BucketName: !Sub 'ahs-${ProjectName}-${EnvironmentName}-iceberg-${AWS::AccountId}'
       VersioningConfiguration:
         Status: Enabled
       BucketEncryption:
