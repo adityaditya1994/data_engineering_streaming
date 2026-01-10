@@ -1,0 +1,11 @@
+# Airflow + EMR Project Dependencies
+# Production dependencies for running the ETL pipeline
+
+# Airflow core
+apache-airflow>=2.8.0
+
+# AWS SDK for EMR job submission
+boto3>=1.34.0
+
+# PySpark for local development/testing
+pyspark>=3.5.0

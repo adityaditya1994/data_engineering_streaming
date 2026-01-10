@@ -1,0 +1,123 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'EMR Cluster for Clickstream ETL with Spark and Iceberg support'
+
+Parameters:
+  ClusterName:
+    Description: Name of the EMR cluster
+    Type: String
+    Default: clickstream-etl-emr
+  
+  MasterInstanceType:
+    Description: EC2 instance type for master node
+    Type: String
+    Default: m5.xlarge
+    AllowedValues:
+      - m5.xlarge
+      - m5.2xlarge
+      - m5.4xlarge
+  
+  CoreInstanceType:
+    Description: EC2 instance type for core nodes
+    Type: String
+    Default: m5.xlarge
+    AllowedValues:
+      - m5.xlarge
+      - m5.2xlarge
+      - m5.4xlarge
+  
+  CoreInstanceCount:
+    Description: Number of core nodes
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 10
+  
+  KeyName:
+    Description: Name of an existing EC2 KeyPair for SSH access
+    Type: AWS::EC2::KeyPair::KeyName
+  
+  LogsS3Bucket:
+    Description: S3 bucket for EMR logs
+    Type: String
+  
+  SubnetId:
+    Description: VPC Subnet ID for EMR cluster
+    Type: AWS::EC2::Subnet::Id
+  
+  EMRServiceRole:
+    Description: IAM role for EMR service
+    Type: String
+    Default: EMR_DefaultRole
+  
+  EMREC2Role:
+    Description: IAM role for EMR EC2 instances
+    Type: String
+    Default: EMR_EC2_DefaultRole
+
+Resources:
+  EMRCluster:
+    Type: AWS::EMR::Cluster
+    Properties:
+      Name: !Ref ClusterName
+      ReleaseLabel: emr-6.15.0
+      Applications:
+        - Name: Spark
+        - Name: Hadoop
+        - Name: Hive
+      
+      LogUri: !Sub 's3://${LogsS3Bucket}/emr-logs/'
+      
+      ServiceRole: !Ref EMRServiceRole
+      JobFlowRole: !Ref EMREC2Role
+      
+      Instances:
+        MasterInstanceGroup:
+          Name: Master
+          InstanceType: !Ref MasterInstanceType
+          InstanceCount: 1
+          Market: ON_DEMAND
+        CoreInstanceGroup:
+          Name: Core
+          InstanceType: !Ref CoreInstanceType
+          InstanceCount: !Ref CoreInstanceCount
+          Market: ON_DEMAND
+        Ec2SubnetId: !Ref SubnetId
+        Ec2KeyName: !Ref KeyName
+        KeepJobFlowAliveWhenNoSteps: true
+        TerminationProtected: false
+      
+      VisibleToAllUsers: true
+      
+      # Spark and Iceberg configuration
+      Configurations:
+        - Classification: spark
+          ConfigurationProperties:
+            maximizeResourceAllocation: 'true'
+        
+        - Classification: spark-defaults
+          ConfigurationProperties:
+            spark.sql.catalog.spark_catalog: org.apache.iceberg.spark.SparkSessionCatalog
+            spark.sql.catalog.spark_catalog.type: hive
+            spark.sql.extensions: org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+            spark.jars.packages: org.apache.iceberg:iceberg-spark-runtime-3.4_2.12:1.4.2
+        
+        - Classification: spark-hive-site
+          ConfigurationProperties:
+            hive.metastore.client.factory.class: com.amazonaws.glue.catalog.metastore.AWSGlueDataCatalogHiveClientFactory
+      
+      Tags:
+        - Key: Environment
+          Value: Production
+        - Key: Project
+          Value: ClickstreamETL
+
+Outputs:
+  ClusterId:
+    Description: EMR Cluster ID
+    Value: !Ref EMRCluster
+    Export:
+      Name: !Sub '${AWS::StackName}-ClusterId'
+  
+  MasterPublicDNS:
+    Description: Master node public DNS (for SSH access)
+    Value: !GetAtt EMRCluster.MasterPublicDNS

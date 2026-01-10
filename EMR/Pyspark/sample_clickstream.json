@@ -1,0 +1,20 @@
+[
+  {
+    "sensor_id": 42,
+    "temperature": 25.4,
+    "humidity": 62.1,
+    "location": {"latitude": 22.5, "longitude": 88.3},
+    "status": "active",
+    "event_type": "sensor_reading",
+    "timestamp": 1704267600
+  },
+  {
+    "sensor_id": 37,
+    "temperature": 33.1,
+    "humidity": 55.7,
+    "location": {"latitude": -10.2, "longitude": 120.8},
+    "status": "faulty",
+    "event_type": "alert",
+    "timestamp": 1704267660
+  }
+]

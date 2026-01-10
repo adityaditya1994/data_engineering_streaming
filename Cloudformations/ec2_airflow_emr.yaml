@@ -1,0 +1,251 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Deploy EC2 with Airflow via pip (Free Tier compatible, eu-north-1), attach IAM for EMR/S3.'
+
+Parameters:
+  KeyName:
+    Description: Name of an existing EC2 KeyPair for SSH
+    Type: AWS::EC2::KeyPair::KeyName
+  
+  InstanceType:
+    Description: EC2 instance type (t2.micro is Free Tier eligible)
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t2.micro
+      - t2.small
+      - t2.medium
+  
+  AllowedIP:
+    Description: Your IP address for SSH/HTTP access (e.g., 203.0.113.50/32). Use 0.0.0.0/0 for open access.
+    Type: String
+    Default: 0.0.0.0/0
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+    ConstraintDescription: Must be a valid CIDR block (e.g., 203.0.113.50/32)
+  
+  VpcId:
+    Description: VPC ID where EC2 will be launched
+    Type: AWS::EC2::VPC::Id
+  
+  SubnetId:
+    Description: Public Subnet ID for the EC2 instance (must have internet access)
+    Type: AWS::EC2::Subnet::Id
+
+Resources:
+  # IAM Instance Profile for EC2
+  AirflowInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref AirflowEC2Role
+
+  # IAM Role with EMR and S3 permissions
+  AirflowEC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'airflow-ec2-role-${AWS::StackName}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AmazonElasticMapReduceFullAccess
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Tags:
+        - Key: Project
+          Value: AirflowEMR
+
+  # Security Group with configurable access
+  AirflowSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub 'airflow-sg-${AWS::StackName}'
+      GroupDescription: Enable HTTP (8080) + SSH (22) access
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AllowedIP
+          Description: SSH access
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: !Ref AllowedIP
+          Description: Airflow UI access
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound traffic
+      Tags:
+        - Key: Name
+          Value: !Sub 'airflow-sg-${AWS::StackName}'
+
+  # EC2 Instance with pip-based Airflow (lightweight for t2.micro)
+  AirflowEC2:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref AirflowInstanceProfile
+      ImageId: ami-081c7a1e4bba99de6  # Ubuntu 22.04 LTS eu-north-1
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref AirflowSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+            DeleteOnTermination: true
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          exec > /var/log/user-data.log 2>&1
+          
+          echo "=== Starting Airflow Installation (pip-based, lightweight) ==="
+          
+          # Update system
+          apt-get update
+          apt-get install -y python3-pip python3-venv python3-dev libpq-dev curl unzip
+          
+          # Create airflow user
+          useradd -m -s /bin/bash airflow || true
+          
+          # Set up Airflow home directory
+          export AIRFLOW_HOME=/home/airflow/airflow
+          mkdir -p $AIRFLOW_HOME/dags $AIRFLOW_HOME/logs $AIRFLOW_HOME/plugins
+          
+          # Create Python virtual environment
+          python3 -m venv /home/airflow/venv
+          source /home/airflow/venv/bin/activate
+          
+          # Install Airflow with constraints (lightweight - SQLite backend)
+          AIRFLOW_VERSION=2.8.0
+          PYTHON_VERSION="$(python3 --version | cut -d " " -f 2 | cut -d "." -f 1-2)"
+          CONSTRAINT_URL="https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt"
+          
+          pip install --upgrade pip
+          pip install "apache-airflow==${AIRFLOW_VERSION}" --constraint "${CONSTRAINT_URL}"
+          pip install boto3 awscli
+          
+          # Set ownership
+          chown -R airflow:airflow /home/airflow
+          
+          # Create Airflow config file
+          cat > $AIRFLOW_HOME/airflow.cfg << 'AIRFLOW_CFG'
+          [core]
+          dags_folder = /home/airflow/airflow/dags
+          executor = SequentialExecutor
+          load_examples = False
+          
+          [webserver]
+          web_server_host = 0.0.0.0
+          web_server_port = 8080
+          secret_key = your-secret-key-change-in-production
+          
+          [scheduler]
+          dag_dir_list_interval = 300
+          AIRFLOW_CFG
+          
+          chown airflow:airflow $AIRFLOW_HOME/airflow.cfg
+          
+          # Create systemd service for Airflow webserver
+          cat > /etc/systemd/system/airflow-webserver.service << 'EOF'
+          [Unit]
+          Description=Airflow Webserver
+          After=network.target
+          
+          [Service]
+          Type=simple
+          User=airflow
+          Group=airflow
+          Environment="AIRFLOW_HOME=/home/airflow/airflow"
+          Environment="PATH=/home/airflow/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          ExecStart=/home/airflow/venv/bin/airflow webserver
+          Restart=on-failure
+          RestartSec=10
+          
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          
+          # Create systemd service for Airflow scheduler
+          cat > /etc/systemd/system/airflow-scheduler.service << 'EOF'
+          [Unit]
+          Description=Airflow Scheduler
+          After=network.target airflow-webserver.service
+          
+          [Service]
+          Type=simple
+          User=airflow
+          Group=airflow
+          Environment="AIRFLOW_HOME=/home/airflow/airflow"
+          Environment="PATH=/home/airflow/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          ExecStart=/home/airflow/venv/bin/airflow scheduler
+          Restart=on-failure
+          RestartSec=10
+          
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          
+          # Initialize Airflow database (SQLite - lightweight)
+          sudo -u airflow bash -c 'source /home/airflow/venv/bin/activate && export AIRFLOW_HOME=/home/airflow/airflow && airflow db migrate'
+          
+          # Create admin user
+          sudo -u airflow bash -c 'source /home/airflow/venv/bin/activate && export AIRFLOW_HOME=/home/airflow/airflow && airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com' || true
+          
+          # Enable and start services
+          systemctl daemon-reload
+          systemctl enable airflow-webserver airflow-scheduler
+          systemctl start airflow-webserver
+          sleep 5
+          systemctl start airflow-scheduler
+          
+          echo "=== Airflow Installation Complete ==="
+          echo "Access Airflow at: http://$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4):8080"
+          echo "Login: admin / admin"
+          
+      Tags:
+        - Key: Name
+          Value: !Sub 'airflow-ec2-${AWS::StackName}'
+        - Key: Project
+          Value: AirflowEMR
+
+Outputs:
+  AirflowURL:
+    Description: 'URL to access Airflow UI (wait 3-5 mins after stack creation)'
+    Value: !Sub 'http://${AirflowEC2.PublicIp}:8080'
+  
+  AirflowPublicIP:
+    Description: 'Public IP of EC2 instance (changes if you stop/start instance)'
+    Value: !GetAtt AirflowEC2.PublicIp
+  
+  SSHCommand:
+    Description: 'SSH command to connect to the instance'
+    Value: !Sub 'ssh -i ${KeyName}.pem ubuntu@${AirflowEC2.PublicIp}'
+  
+  AirflowInstanceID:
+    Description: 'EC2 Instance ID'
+    Value: !Ref AirflowEC2
+  
+  AirflowEC2RoleArn:
+    Description: 'ARN of EC2 role with EMR/S3 permissions'
+    Value: !GetAtt AirflowEC2Role.Arn
+  
+  DAGsDirectory:
+    Description: 'Location to upload DAG files on the EC2 instance'
+    Value: '/home/airflow/airflow/dags/'
+  
+  LoginCredentials:
+    Description: 'Default Airflow login credentials'
+    Value: 'Username: admin, Password: admin'
+  
+  FreeTierNote:
+    Description: 'Important Free Tier information'
+    Value: 'This setup is Free Tier compatible. Note: Public IP changes on stop/start. Use Elastic IP ($3.60/mo when stopped) for stable access.'

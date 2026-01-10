@@ -1,0 +1,121 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'IAM Roles required for EMR cluster operation'
+
+Resources:
+  # EMR Service Role - used by EMR service to manage cluster resources
+  EMRServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: EMR_DefaultRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: elasticmapreduce.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonElasticMapReduceRole
+      Tags:
+        - Key: Project
+          Value: ClickstreamETL
+
+  # EMR EC2 Instance Profile Role - used by EC2 instances in EMR cluster
+  EMREC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: EMR_EC2_DefaultRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonElasticMapReduceforEC2Role
+      Policies:
+        - PolicyName: S3FullAccessForClickstream
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - arn:aws:s3:::*-bronze-*
+                  - arn:aws:s3:::*-bronze-*/*
+                  - arn:aws:s3:::*-scripts-*
+                  - arn:aws:s3:::*-scripts-*/*
+                  - arn:aws:s3:::*-logs-*
+                  - arn:aws:s3:::*-logs-*/*
+        - PolicyName: GlueCatalogAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - glue:*Database*
+                  - glue:*Table*
+                  - glue:*Partition*
+                  - glue:GetCatalogImportStatus
+                Resource: '*'
+      Tags:
+        - Key: Project
+          Value: ClickstreamETL
+
+  # Instance Profile for EMR EC2 instances
+  EMREC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: EMR_EC2_DefaultRole
+      Roles:
+        - !Ref EMREC2Role
+
+  # Auto-scaling role for EMR (optional but recommended)
+  EMRAutoScalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: EMR_AutoScaling_DefaultRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - elasticmapreduce.amazonaws.com
+                - application-autoscaling.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonElasticMapReduceforAutoScalingRole
+      Tags:
+        - Key: Project
+          Value: ClickstreamETL
+
+Outputs:
+  EMRServiceRoleArn:
+    Description: ARN of EMR Service Role
+    Value: !GetAtt EMRServiceRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-EMRServiceRoleArn'
+  
+  EMREC2RoleArn:
+    Description: ARN of EMR EC2 Role
+    Value: !GetAtt EMREC2Role.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-EMREC2RoleArn'
+  
+  EMREC2InstanceProfileArn:
+    Description: ARN of EMR EC2 Instance Profile
+    Value: !GetAtt EMREC2InstanceProfile.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-EMREC2InstanceProfileArn'
+  
+  EMRAutoScalingRoleArn:
+    Description: ARN of EMR Auto Scaling Role
+    Value: !GetAtt EMRAutoScalingRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-EMRAutoScalingRoleArn'
