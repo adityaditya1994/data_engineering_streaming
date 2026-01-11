@@ -114,7 +114,7 @@ class TestTempHumidityKPIs:
         # Add day column
         df = df.withColumn(
             "day", 
-            date_format((col("timestamp") * 1000).cast("timestamp"), "yyyy-MM-dd")
+            date_format(col("timestamp").cast("timestamp"), "yyyy-MM-dd")
         )
         
         # Aggregate metrics
@@ -148,7 +148,7 @@ class TestTempHumidityKPIs:
         
         df = df.withColumn(
             "day",
-            date_format((col("timestamp") * 1000).cast("timestamp"), "yyyy-MM-dd")
+            date_format(col("timestamp").cast("timestamp"), "yyyy-MM-dd")
         )
         
         result = df.collect()[0]['day']

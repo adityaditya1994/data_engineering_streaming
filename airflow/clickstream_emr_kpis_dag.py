@@ -6,25 +6,10 @@ import os
 import time
 import json
 
-def debug_log(hypothesisId, location, message, data=None):
-    # region agent log
-    debug_payload = {
-        'sessionId': 'debug-session',
-        'runId': 'initial',
-        'hypothesisId': hypothesisId,
-        'location': location,
-        'message': message,
-        'data': data,
-        'timestamp': int(time.time() * 1000)
-    }
-    with open("/Users/adityasinghal/Documents/GitHub/coderepo/airflow_emr/.cursor/debug.log", "a") as f:
-        f.write(json.dumps(debug_payload) + "\n")
-    # endregion
+
 
 def create_emr_cluster():
-    # region agent log
-    debug_log('H1', 'clickstream_emr_kpis_dag.py:create_emr_cluster:entry', 'Entered create_emr_cluster')
-    # endregion
+
     client = boto3.client('emr', region_name='eu-north-1')
     # Cheapest config: 1 master + 2 core, both m5.xlarge as minimal for Iceberg + Glue
     response = client.run_job_flow(
@@ -34,18 +19,41 @@ def create_emr_cluster():
         Applications=[{'Name': 'Spark'}],
         Instances={
             'InstanceGroups': [
+                # Master node: On-Demand (stable)
                 {'Name': 'Master nodes', 'Market': 'ON_DEMAND', 'InstanceRole': 'MASTER', 'InstanceType': 'm5.xlarge', 'InstanceCount': 1},
-                {'Name': 'Core nodes', 'Market': 'ON_DEMAND', 'InstanceRole': 'CORE', 'InstanceType': 'm5.xlarge', 'InstanceCount': 2}
+                # Core nodes: Spot (cheaper)
+                {'Name': 'Core nodes', 'Market': 'SPOT', 'BidPrice': '0.10', 'InstanceRole': 'CORE', 'InstanceType': 'm5.xlarge', 'InstanceCount': 2}
             ],
             'KeepJobFlowAliveWhenNoSteps': True,
             'TerminationProtected': False
         },
         JobFlowRole=os.environ.get('EMR_EC2_ROLE', 'EMR_EC2_DefaultRole'),
         ServiceRole=os.environ.get('EMR_ROLE', 'EMR_DefaultRole'),
-        VisibleToAllUsers=True
+        VisibleToAllUsers=True,
+        Configurations=[
+            {
+                'Classification': 'spark',
+                'Properties': {'maximizeResourceAllocation': 'true'}
+            },
+            {
+                'Classification': 'spark-defaults',
+                'Properties': {
+                    'spark.sql.catalog.spark_catalog': 'org.apache.iceberg.spark.SparkSessionCatalog',
+                    'spark.sql.catalog.spark_catalog.type': 'hive',
+                    'spark.sql.extensions': 'org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions',
+                    'spark.jars.packages': 'org.apache.iceberg:iceberg-spark-runtime-3.4_2.12:1.4.2'
+                }
+            },
+            {
+                'Classification': 'spark-hive-site',
+                'Properties': {
+                    'hive.metastore.client.factory.class': 'com.amazonaws.glue.catalog.metastore.AWSGlueDataCatalogHiveClientFactory'
+                }
+            }
+        ]
     )
     cluster_id = response['JobFlowId']
-    debug_log('H1', 'clickstream_emr_kpis_dag.py:create_emr_cluster:exit', 'Created cluster', {'cluster_id': cluster_id, 'conf': response})
+
     return cluster_id
 
 def wait_for_cluster(cluster_id):
@@ -55,14 +63,12 @@ def wait_for_cluster(cluster_id):
         time.sleep(30)
         desc = client.describe_cluster(ClusterId=cluster_id)
         state = desc['Cluster']['Status']['State']
-        debug_log('H2', 'clickstream_emr_kpis_dag.py:wait_for_cluster', f'Waiting for cluster state: {state}', {'cluster_id': cluster_id})
-    debug_log('H2', 'clickstream_emr_kpis_dag.py:wait_for_cluster', f'Cluster ready: {state}', {'cluster_id': cluster_id})
+
+
     return state
 
-def submit_emr_job(kpi_script, job_name, s3_bronze, iceberg_db, iceberg_tbl, emr_cluster_id, emr_log_uri, script_bucket, **context):
-    debug_log('H4', 'clickstream_emr_kpis_dag.py:submit_emr_job:entry', 'Submitting EMR job', {
-        'kpi_script': kpi_script, 'cluster_id': emr_cluster_id, 'job_name': job_name
-    })
+def submit_emr_job(kpi_script, job_name, s3_bronze, iceberg_db, iceberg_tbl, iceberg_warehouse, emr_cluster_id, emr_log_uri, script_bucket, **context):
+
     client = boto3.client('emr', region_name='eu-north-1')
     step = {
         'Name': job_name,
@@ -74,7 +80,8 @@ def submit_emr_job(kpi_script, job_name, s3_bronze, iceberg_db, iceberg_tbl, emr
                 f's3://{script_bucket}/{kpi_script}',
                 s3_bronze,
                 iceberg_db,
-                iceberg_tbl
+                iceberg_tbl,
+                iceberg_warehouse  # 4th argument: Iceberg warehouse S3 path
             ]
         }
     }
@@ -83,14 +90,37 @@ def submit_emr_job(kpi_script, job_name, s3_bronze, iceberg_db, iceberg_tbl, emr
         Steps=[step]
     )
     step_id = response['StepIds'][0]
-    debug_log('H4', 'clickstream_emr_kpis_dag.py:submit_emr_job:exit', f'Submitted {job_name}', {'step_id': step_id})
+    
+    # Poll for step completion
+    while True:
+        status_details = client.describe_step(ClusterId=emr_cluster_id, StepId=step_id)
+        step_state = status_details['Step']['Status']['State']
+        
+        if step_state in ['COMPLETED']:
+            break
+        elif step_state in ['CANCELLED', 'FAILED', 'INTERRUPTED']:
+            raise Exception(f'Step {step_id} failed with state: {step_state}')
+            
+        time.sleep(30)
+        
     return step_id
+
+def terminate_emr_cluster(cluster_id):
+    client = boto3.client('emr', region_name='eu-north-1')
+    client.terminate_job_flows(JobFlowIds=[cluster_id])
+    return cluster_id
+
+def airflow_terminate_cluster(**context):
+    ti = context['ti']
+    cluster_id = ti.xcom_pull(task_ids='create_emr_cluster')
+    if cluster_id:
+        terminate_emr_cluster(cluster_id)
 
 # --- Orchestration logic with cluster creation/wait -
 def airflow_create_cluster(**context):
     cluster_id = create_emr_cluster()
     wait_for_cluster(cluster_id)
-    debug_log('H3', 'clickstream_emr_kpis_dag.py:airflow_create_cluster', 'Cluster up and ready', {'cluster_id': cluster_id})
+    
     return cluster_id
 
 def airflow_submit_emr_sensor_health(**context):
@@ -102,6 +132,7 @@ def airflow_submit_emr_sensor_health(**context):
         s3_bronze=os.environ['BRONZE_PATH'],
         iceberg_db=os.environ['ICEBERG_DB'],
         iceberg_tbl='sensor_health',
+        iceberg_warehouse=f"s3://{os.environ['ICEBERG_BUCKET']}/",
         emr_cluster_id=cluster_id,
         emr_log_uri=os.environ['EMR_LOG_URI'],
         script_bucket=os.environ['SCRIPT_BUCKET']
@@ -116,6 +147,7 @@ def airflow_submit_emr_temp_humidity(**context):
         s3_bronze=os.environ['BRONZE_PATH'],
         iceberg_db=os.environ['ICEBERG_DB'],
         iceberg_tbl='temp_humidity_kpis',
+        iceberg_warehouse=f"s3://{os.environ['ICEBERG_BUCKET']}/",
         emr_cluster_id=cluster_id,
         emr_log_uri=os.environ['EMR_LOG_URI'],
         script_bucket=os.environ['SCRIPT_BUCKET']
@@ -130,6 +162,7 @@ def airflow_submit_emr_event_geo(**context):
         s3_bronze=os.environ['BRONZE_PATH'],
         iceberg_db=os.environ['ICEBERG_DB'],
         iceberg_tbl='event_geo_kpis',
+        iceberg_warehouse=f"s3://{os.environ['ICEBERG_BUCKET']}/",
         emr_cluster_id=cluster_id,
         emr_log_uri=os.environ['EMR_LOG_URI'],
         script_bucket=os.environ['SCRIPT_BUCKET']
@@ -173,4 +206,11 @@ kpi_event_geo_task = PythonOperator(
     dag=dag
 )
 
-create_cluster_task >> kpi_sensor_health_task >> kpi_temp_humidity_task >> kpi_event_geo_task
+terminate_cluster_task = PythonOperator(
+    task_id='terminate_emr_cluster',
+    python_callable=airflow_terminate_cluster,
+    dag=dag,
+    trigger_rule='all_done'
+)
+
+create_cluster_task >> kpi_sensor_health_task >> kpi_temp_humidity_task >> kpi_event_geo_task >> terminate_cluster_task

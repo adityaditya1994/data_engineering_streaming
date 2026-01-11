@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.cursor/
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment files with secrets
+.env
+*.env.local
+.env.*.local
+
+# Security - Never commit keys/credentials
+*.pem
+*.key
+*.crt
+aws_credentials.json
+
+# Debug/temp files
+stderr*
+stdout
+controller
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Docker
+docker_airflow/.env
+docker_notebook/.env

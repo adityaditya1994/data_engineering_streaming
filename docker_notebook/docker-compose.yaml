@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  notebook:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Environment variables for AWS Access
+    environment:
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-eu-north-1}
+      - SCRIPT_BUCKET=${SCRIPT_BUCKET}
+      - BRONZE_PATH=${BRONZE_PATH}
+      - ICEBERG_DB=${ICEBERG_DB}
+    volumes:
+      # Mount notebooks to work directory
+      - ../notebooks:/home/jovyan/work/notebooks
+      # Mount scripts for access/editing
+      - ../EMR:/home/jovyan/work/scripts
+      # Mount AWS creds (optional, environment preferred)
+      - ~/.aws:/home/jovyan/.aws:ro
+    ports:
+      - "8888:8888"
+      - "4040:4040" # Spark UI
+    command: start-notebook.sh --NotebookApp.token='' # No token for simple local dev
